@@ -1,5 +1,4 @@
 import h5py
-# import numpy as np
 import matplotlib.pyplot as plt
 import os
 import torch
@@ -7,6 +6,8 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 import lava.lib.dl.slayer as slayer
 from tqdm import tqdm  # progressbar
+import itertools
+
 
 class dhp19(Dataset):
     """
@@ -41,14 +42,30 @@ def plot_sample_from_dataset(input, target, batch_idx, cam_index, time_idx, join
     plt.show()
 
 
-def plot_net_output(output, sample_idx, time_idx, joint_idx):
+def plot_net_output(output, sample_idx, time_idx, joint_idx, plt_title=None):
     """
     Plot model output
     """
     plt.figure()
-    # arget_sample = target[batch_idx, joint_idx, :, :, cam_index, time_idx]  
-    plt_title = f'Output sample from\n batch {sample_idx}, time {time_idx}, target joint {joint_idx}'
+    # arget_sample = target[batch_idx, joint_idx, :, :, cam_index, time_idx]
+    if plt_title is None:
+        plt_title = f'Output sample from\n sample {sample_idx}, time {time_idx}, target joint {joint_idx}'
     plt.imshow(output[sample_idx, joint_idx,:,:,time_idx])
+    plt.title(plt_title)
+    plt.show()
+
+
+def plot_net_input_output(output, input, sample_idx, time_idx, joint_idx, plt_title=None):
+    """
+    Plot model output
+    """
+    # arget_sample = target[batch_idx, joint_idx, :, :, cam_index, time_idx]
+    if plt_title is None:
+        plt_title = f'Input/Output sample from\n sample {sample_idx}, time {time_idx}, target joint {joint_idx}'
+    plt.figure()
+    plt.imshow(input[sample_idx, 0,:,:,time_idx], cmap='gray')
+    plt.imshow(output[sample_idx, joint_idx,:,:,time_idx], alpha=.5)
+    plt.title(plt_title)
     plt.title(plt_title)
     plt.show()
 
@@ -57,6 +74,23 @@ def plot_net_output(output, sample_idx, time_idx, joint_idx):
 def event_rate_loss(x, max_rate=0.01):
     mean_event_rate = torch.mean(torch.abs(x))
     return F.mse_loss(F.relu(mean_event_rate - max_rate), torch.zeros_like(mean_event_rate))
+
+
+def opt_model(input, target, model, optimizer, lam):
+    """
+    Propagate input through the model and optimize the model parameters.
+    """
+    optimizer.zero_grad()
+    # forward inputs
+    output, event_cost, count = model(input)
+
+    # compute loss + backward + optimize
+    loss = F.mse_loss(output, target)
+    loss += lam * event_cost
+    loss.backward()
+    optimizer.step()
+
+    return loss, output, event_cost, count
 
 
 # Define the network
@@ -182,17 +216,19 @@ class Network(torch.nn.Module):
         return x, event_cost, torch.FloatTensor(count).reshape((1, -1)).to(x.device)
 
 
-    def grad_flow(self, path=None):
+    def grad_flow(self, path=None, show=False):
         # helps monitor the gradient flow
         grad = [b.synapse.grad_norm for b in self.blocks if hasattr(b, 'synapse')]
 
-        plt.figure()
-        plt.semilogy(grad)
+        # plot grads
         if path:
-            plt.savefig(path + 'gradFlow.png')
-            plt.close()
-        else:
-            plt.show()
+            plt.figure()
+            plt.semilogy(grad)
+            if show:
+                plt.show()
+            else:
+                plt.savefig(path + 'gradFlow.png')
+                plt.close()
 
         return grad
 
@@ -224,25 +260,13 @@ project_path = './'
 # training parameters
 batch_size  = 8  # batch size
 learning_rate = 0.0001 # leaerning rate
-lam    = 0  # lagrangian for event rate loss
-num_epochs = 10  # training epochs
-# steps  = [60, 120, 160] # learning rate reduction milestones
+lam = 0  # lagrangian for event rate loss
 cam_index = 1 # camera index to train on
 seq_length = 8 # number of event frames per sequence to be shown to the SDNN
+num_epochs = 100 # number of epochs to train
 
 model_name = 'dhp19_sdnn'
 device = torch.device('cuda:0')
-
-# create experiment name
-experiment_name = model_name + \
-                '_epochs' + str(num_epochs) + \
-                '_lr' + str(learning_rate) + \
-                '_batchsize' + str(batch_size) + \
-                '_seq' + str(seq_length) + \
-                '_cam' + str(cam_index) + \
-                '_lam' + str(lam)
-
-print('Starting experiment:', experiment_name)
 
 #load data
 data_dict = torch.load(event_data_path + f'dhp19_dataset_sparse_small_seq{seq_length}.pt')
@@ -257,22 +281,13 @@ dhp19_dataset = dhp19(data_dict['input_tensors'],
                         data_dict['mov_tensor'])
 
 train_loader = DataLoader(dataset=dhp19_dataset, batch_size=8, shuffle=True, num_workers=12)
-# dhp19_dataset.__len__()
-
-# plot some samples
-input, target, session, subject, mov = next(iter((train_loader)))
-# input.shape
-# target.shape
-batch_idx = 0
-cam_index = 1
-time_idx = 0
-joint_idx = 8
-plot_sample_from_dataset(input, target, batch_idx, cam_index, time_idx, joint_idx)
 
 model = Network().to(device)
 optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
 
 # training loop
+train_loss = []
+
 for epoch in range(num_epochs):
     # train one epoch
     running_loss = 0.0        
@@ -281,39 +296,52 @@ for epoch in range(num_epochs):
     epoch_train_loop = tqdm(train_loader)  # setup progress bar
 
     for batch_idx, (input, target, session, subject, mov) in enumerate(epoch_train_loop): # training loop
-
+        # get mini batch
         input = input[:,:,:,:,cam_index,:].to(device) # N C H W T
-        # target.shape, # N, C, H, W, Cam T format
-        target = target[:,:,:,:,cam_index,:].to(device) # N C H W T   
-        
-        # zero the parameter gradient
-        optimizer.zero_grad()
-        # forward inputs
-        output, event_cost, count = model(input)
-        
-        # compute loss + backward + optimize
-        loss = F.mse_loss(output, target)
-        loss += lam * event_cost
-        loss.backward()
-        optimizer.step()
+        target = target[:,:,:,:,cam_index,:].to(device) # N C H W T
+        # input.shape # torch.Size([8, 1, 260, 344, 8])
+        # target.shape # torch.Size([8, 13, 260, 344, 8])
 
-        # grads = model.grad_flow()
-        # plt.plot(grads)
+        loss, output, event_cost, count = opt_model(input, target, model, optimizer, lam)
 
-        # store loss
         batch_loss.append(loss.item())
-
-        epoch_train_loop.set_description(f'Epoch [{epoch}/{num_epochs}]')
-        epoch_train_loop.set_postfix()
-
-        # compute scores for the epoch
+         # compute scores for the epoch
         running_loss += loss.item() * input.size(0)
+    
+    # plot model input vs output
+    sample_idx=0
+    time_idx=0
+    joint_idx=8
+    
+    plt_title = f'Output sample after epoch {epoch} from\n sample {sample_idx}, time {time_idx}, target joint {joint_idx}'
+    plot_net_output(output.detach().cpu(), sample_idx=sample_idx, time_idx=time_idx, joint_idx=joint_idx, plt_title=plt_title)   
+    
+    plt_title = f'Input/Output sample after epoch {epoch} from\n sample {sample_idx}, time {time_idx}, target joint {joint_idx}'
+    plot_net_input_output(output.detach().cpu(), input.detach().cpu(), sample_idx=sample_idx, time_idx=time_idx, joint_idx=joint_idx, plt_title=plt_title)
+
+    # gradient flow
+    grad = model.grad_flow()
+    plt.figure()
+    plt.semilogy(grad)
+    plt.title(f'Gradient Flow after epoch {epoch}')
+    # plt.savefig(project_path + 'grads_per_layer_step1.png')
+    # plt.close()
+    plt.show()
+
+    # counts
+    plt.figure()
+    plt.plot(count.detach().cpu().numpy().T)
+    plt.title(f'Number of events per layer after epoch {epoch}')
+    # plt.savefig(project_path + 'counts_per_layer_step1.png')
+    # plt.close()
+    plt.show()
 
     epoch_loss = running_loss / dhp19_dataset.__len__()
     # show metrics for epoch
     print('Loss: {:.4f} '.format(epoch_loss), end=' ')
     # model.grad_flow(act_result_path + 'plots/')
+    train_loss.append(epoch_loss)
 
-    # # checkpoint saves
-    # if epoch%1 == 0:
-    #     torch.save({'net': net.state_dict(), 'optimizer': optimizer.state_dict()}, act_result_path + f'checkpoint{epoch}.pt')                   
+    plt.figure()
+    plt.semilogy(train_loss)
+    plt.show()
