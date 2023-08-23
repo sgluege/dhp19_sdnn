@@ -259,7 +259,7 @@ project_path = './'
 
 # training parameters
 batch_size  = 8  # batch size
-learning_rate = 0.0001 # leaerning rate
+learning_rate = 0.0001 # learning rate
 lam = 0  # lagrangian for event rate loss
 cam_index = 1 # camera index to train on
 seq_length = 8 # number of event frames per sequence to be shown to the SDNN
@@ -319,14 +319,14 @@ for epoch in range(num_epochs):
     plt_title = f'Input/Output sample after epoch {epoch} from\n sample {sample_idx}, time {time_idx}, target joint {joint_idx}'
     plot_net_input_output(output.detach().cpu(), input.detach().cpu(), sample_idx=sample_idx, time_idx=time_idx, joint_idx=joint_idx, plt_title=plt_title)
 
-    # gradient flow
-    grad = model.grad_flow()
-    plt.figure()
-    plt.semilogy(grad)
-    plt.title(f'Gradient Flow after epoch {epoch}')
-    # plt.savefig(project_path + 'grads_per_layer_step1.png')
-    # plt.close()
-    plt.show()
+    # # gradient flow
+    # grad = model.grad_flow()
+    # plt.figure()
+    # plt.semilogy(grad)
+    # plt.title(f'Gradient Flow after epoch {epoch}')
+    # # plt.savefig(project_path + 'grads_per_layer_step1.png')
+    # # plt.close()
+    # plt.show()
 
     # counts
     plt.figure()
@@ -336,7 +336,7 @@ for epoch in range(num_epochs):
     # plt.close()
     plt.show()
 
-    epoch_loss = running_loss / dhp19_dataset.__len__()
+    epoch_loss = running_loss #/ dhp19_dataset.__len__()
     # show metrics for epoch
     print('Loss: {:.4f} '.format(epoch_loss), end=' ')
     # model.grad_flow(act_result_path + 'plots/')
@@ -344,4 +344,5 @@ for epoch in range(num_epochs):
 
     plt.figure()
     plt.semilogy(train_loss)
+    plt.title(f'Training Loss after epoch {epoch}')
     plt.show()
